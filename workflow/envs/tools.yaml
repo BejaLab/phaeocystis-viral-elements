@@ -1,0 +1,11 @@
+channels:
+ - bioconda
+ - conda-forge
+dependencies:
+ - seqkit=0.14.0
+ - trim-galore=0.6.7
+ - cutadapt=4.1
+ - hmmer=3.3.2
+ - emboss=6.6.0
+ - bbmap=38.96
+ - bowtie2=2.4.5

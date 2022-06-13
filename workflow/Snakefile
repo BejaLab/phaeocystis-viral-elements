@@ -1,0 +1,384 @@
+
+import gzip
+
+min_read = 35
+
+genomes  ,= glob_wildcards("metadata/sra/{genome}.txt")
+profiles ,= glob_wildcards("hmm/{profile}.hmm")
+
+lib_types = {}
+type_libs = {}
+lib_short = []
+for genome in genomes:
+    txt = "metadata/sra/%s.txt" % genome
+    type_libs[genome] = { 'fr': [], 'rf': [], 'sanger': [] }
+    with open(txt) as fd:
+        for line in fd:
+            sra, lib_type, *short = line.rstrip().split("\t")
+            if len(short) > 0:
+                lib_short.append(sra)
+            lib_types[sra] = lib_type
+            type_libs[genome][lib_type].append(sra)
+
+rule all:
+    input:
+        expand("analysis/soapdenovo/{genome}/K{K}/viruses/scaffolds.fasta", genome = genomes, K = 127)
+
+rule trim_paired:
+    input:
+        r1 = "raw/{genome}/{sra}_1.fastq.gz",
+        r2 = "raw/{genome}/{sra}_2.fastq.gz"
+    output:
+        "analysis/trim/{genome}/{sra}_1_val_1.fq.gz",
+        "analysis/trim/{genome}/{sra}_2_val_2.fq.gz",
+        "analysis/trim/{genome}/{sra}_1_unpaired_1.fq.gz",
+        "analysis/trim/{genome}/{sra}_2_unpaired_2.fq.gz"
+    params:
+        min_read = min_read,
+        truseq  = "AGATCGGAAGAGC",
+        nextera = "CTGTCTCTTATA",
+        outdir = "analysis/trim/{genome}/"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "trim_galore -a ' {params.truseq} -a {params.nextera} -n 3' --cores {threads} --trim-n --paired --retain_unpaired --output_dir {params.outdir} --length {params.min_read} {input.r1} {input.r2}"
+
+rule trim_single:
+    input:
+        reads = "raw/{genome}/{sra}_1.fastq.gz"
+    output:
+        "analysis/trim/{genome}/{sra}_1_trimmed.fq.gz"
+    params:
+        min_read = min_read,
+        truseq  = "AGATCGGAAGAGC",
+        nextera = "CTGTCTCTTATA",
+        outdir = "analysis/trim/{genome}/"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "trim_galore -a ' {params.truseq} -a {params.nextera} -n 3' --cores {threads} --trim-n --length {params.min_read} --output_dir {params.outdir} {input.reads}"
+
+rule faidx:
+    input:
+        "{prefix}"
+    output:
+        "{prefix}.fai"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit faidx {input}"
+
+def megahit_input(wildcards, input):
+    pe1 = []
+    pe2 = []
+    se = []
+    for i in range(len(input.fr_pe1)):
+        if gz_not_empty(input.fr_pe1[i]):
+            pe1.append(input.fr_pe1[i])
+            pe2.append(input.fr_pe2[i])
+        if gz_not_empty(input.fr_pe1_un[i]):
+            se.append(input.fr_pe1_un[i])
+        if gz_not_empty(input.fr_pe2_un[i]):
+            se.append(input.fr_pe2_un[i])
+    for i in range(len(input.rf_pe1)):
+        if gz_not_empty(input.rf_pe1[i]):
+            pe1.append(input.rf_pe1[i])
+            pe2.append(input.rf_pe2[i])
+        if gz_not_empty(input.mp1[i]):
+            pe1.append(input.mp1[i])
+            pe2.append(input.mp2[i])
+        if gz_not_empty(input.rf_pe1_un[i]):
+            se.append(input.rf_pe1_un[i])
+        if gz_not_empty(input.rf_pe2_un[i]):
+            se.append(input.rf_pe2_un[i])
+        if gz_not_empty(input.mp1_un[i]):
+            se.append(input.mp1_un[i])
+        if gz_not_empty(input.mp2_un[i]):
+            se.append(input.mp2_un[i])
+        if gz_not_empty(input.se[i]):
+            se.append(input.se[i])
+        if gz_not_empty(input.un1[i]):
+            se.append(input.un1[i])
+        if gz_not_empty(input.un2[i]):
+            se.append(input.un2[i])
+    reads = []
+    reads.append('-1 %s' % ','.join(pe1))
+    reads.append('-2 %s' % ','.join(pe2))
+    if len(se) > 0:
+    	reads.append('-r %s' % ','.join(se))
+    return ' '.join(reads)
+
+rule megahit:
+    input:
+        fr_pe1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_1_val_1.fq.gz",            sra = type_libs[w.genome]['fr']),
+        fr_pe2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_2_val_2.fq.gz",            sra = type_libs[w.genome]['fr']),
+
+        fr_pe1_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_1_unpaired_1.fq.gz",       sra = type_libs[w.genome]['fr']),
+        fr_pe2_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_2_unpaired_2.fq.gz",       sra = type_libs[w.genome]['fr']),
+
+        mp1       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc.fq.gz",           sra = type_libs[w.genome]['rf']),
+        mp2       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc.fq.gz",           sra = type_libs[w.genome]['rf']),
+        rf_pe1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.pe_val_1.fq.gz",        sra = type_libs[w.genome]['rf']),
+        rf_pe2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.pe_val_2.fq.gz",        sra = type_libs[w.genome]['rf']),
+
+        mp1_un    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_unpaired_1.fq.gz",   sra = type_libs[w.genome]['rf']),
+        mp2_un    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_unpaired_2.fq.gz",   sra = type_libs[w.genome]['rf']),
+        rf_pe1_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.pe_unpaired_1.fq.gz",   sra = type_libs[w.genome]['rf']),
+        rf_pe2_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.pe_unpaired_2.fq.gz",   sra = type_libs[w.genome]['rf']),
+        se        = lambda w: expand("analysis/trim/{{genome}}/{sra}.se_trimmed.fq.gz",         sra = type_libs[w.genome]['rf']),
+        un1       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.unknown_trimmed.fq.gz", sra = type_libs[w.genome]['rf']),
+        un2       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.unknown_trimmed.fq.gz", sra = type_libs[w.genome]['rf'])
+    output:
+        out_dir = directory("analysis/megahit/{genome}"),
+        fasta = "analysis/megahit/{genome}/final.contigs.fa"
+    params:
+        k = "27,47,67,87,107,127",
+        min_contig_len = 1000,
+        reads = megahit_input
+    log:
+        "analysis/megahit/{genome}.log"
+    threads:
+        workflow.cores
+    conda:
+        "envs/megahit.yaml"
+    shell:
+        "megahit {params.reads} -f -o {output.out_dir} --k-list {params.k} --min-contig-len {params.min_contig_len} -t {threads} &> {log}"
+
+def gz_not_empty(fname):
+    ''' Test if gzip file fname is empty
+        Return True if the uncompressed data in fname has zero length
+        or if fname itself has zero length
+        Raises OSError if fname has non-zero length and is not a gzip file
+    '''
+    with gzip.open(fname, 'rb') as f:
+        data = f.read(1)
+    return len(data) > 0
+
+rule bowtie_build:
+    input:
+        "{prefix}"
+    output:
+        "{prefix}.1.bt2"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "bowtie2-build {input} {wildcards.prefix}"
+
+rule replace_linker:
+    input:
+        "raw/{genome}/{prefix}.fastq.gz"
+    output:
+        "analysis/linker/{genome}/{prefix}.fastq.gz"
+    params:
+        old_linker = "CTGCTGTACSGYMMAKSCGSMTKKRCSGTACAGCAG",
+        new_linker = "CTGTCTCTTATACACATCTAGATGTGTATAAGAGACAG"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "cutadapt -o /dev/null --info-file /dev/stdout --quiet -b {params.old_linker} {input} | python workflow/utilities/info2fastq.py {params.new_linker} | gzip > {output}"
+
+rule nxtrim:
+    input:
+        r1 = "analysis/linker/{genome}/{sra}_1.fastq.gz",
+        r2 = "analysis/linker/{genome}/{sra}_2.fastq.gz"
+    output:
+        mp1 = "analysis/nxtrim/{genome}/{sra}_R1.mp.fastq.gz",
+        mp2 = "analysis/nxtrim/{genome}/{sra}_R2.mp.fastq.gz",
+        pe1 = "analysis/nxtrim/{genome}/{sra}_R1.pe.fastq.gz",
+        pe2 = "analysis/nxtrim/{genome}/{sra}_R2.pe.fastq.gz",
+        un1 = "analysis/nxtrim/{genome}/{sra}_R1.unknown.fastq.gz",
+        un2 = "analysis/nxtrim/{genome}/{sra}_R2.unknown.fastq.gz",
+        se  = "analysis/nxtrim/{genome}/{sra}.se.fastq.gz"
+    params:
+        prefix = "analysis/nxtrim/{genome}/{sra}"
+    conda:
+        "envs/nxtrim.yaml"
+    shell:
+        "nxtrim -1 {input.r1} -2 {input.r2} -O {params.prefix} --separate --rf"
+
+rule trim_paired_nxtrim:
+    input:
+        r1 = "analysis/nxtrim/{genome}/{sra}_R1.{suffix}.fastq.gz",
+        r2 = "analysis/nxtrim/{genome}/{sra}_R2.{suffix}.fastq.gz"
+    output:
+        "analysis/trim/{genome}/{sra}_R1.{suffix}_val_1.fq.gz",
+        "analysis/trim/{genome}/{sra}_R2.{suffix}_val_2.fq.gz",
+        "analysis/trim/{genome}/{sra}_R1.{suffix}_unpaired_1.fq.gz",
+        "analysis/trim/{genome}/{sra}_R2.{suffix}_unpaired_2.fq.gz"
+    wildcard_constraints:
+        suffix = "mp|pe"
+    params:
+        min_read = min_read,
+        truseq  = "AGATCGGAAGAGC",
+        nextera = "CTGTCTCTTATA",
+        outdir = "analysis/trim/{genome}/"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "trim_galore -a ' {params.truseq} -a {params.nextera} -n 3' --cores {threads} --trim-n --paired --retain_unpaired --output_dir {params.outdir} --length {params.min_read} {input.r1} {input.r2}"
+
+rule trim_single_nxtrim:
+    input:
+        "analysis/nxtrim/{genome}/{sra}{suffix}.fastq.gz"
+    output:
+        "analysis/trim/{genome}/{sra}{suffix}_trimmed.fq.gz"
+    wildcard_constraints:
+        suffix = "\.se|_R1\.unknown|_R2\.unknown"
+    params:
+        min_read = min_read,
+        truseq  = "AGATCGGAAGAGC",
+        nextera = "CTGTCTCTTATA",
+        outdir = "analysis/trim/{genome}/"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "trim_galore -a ' {params.truseq} -a {params.nextera} -n 3' --cores {threads} --trim-n --output_dir {params.outdir} --length {params.min_read} {input}"
+
+rule mate_rc:
+    input:
+        "analysis/trim/{genome}/{sra}_R{dir}.mp_val_{dir}.fq.gz",
+    output:
+        "analysis/trim/{genome}/{sra}_R{dir}.mp_rc.fq.gz"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit seq -rp {input} | gzip > {output}"
+
+def make_soap_config(wildcards, input):
+    genome = wildcards.genome
+    max_rd_len = 151
+    map_len = 63
+    lines = [ 'max_rd_len=%d' % max_rd_len ]
+    fr_ins = 300
+    rf_mp_ins = 3000
+    rf_pe_ins = 200
+    default = [ '[LIB]', 'reverse_seq=0', 'asm_flags=3', 'map_len=%d' % map_len ]
+    for sra in type_libs[genome]['fr']:
+        fr_pe1 = "analysis/trim/%s/%s_1_val_1.fq.gz" % (genome, sra)
+        fr_pe2 = "analysis/trim/%s/%s_2_val_2.fq.gz" % (genome, sra)
+        # assert fr_pe1 in input.fr_pe1, "Not in input: %s" % fr_pe1
+        if gz_not_empty(fr_pe1):
+            lines += default
+            lines.append('avg_ins=%d' % fr_ins)
+            lines.append('rank=1')
+            lines.append('pair_num_cutoff=3')
+            lines.append('q1=%s' % fr_pe1)
+            lines.append('q2=%s' % fr_pe2)
+    for sra in type_libs[genome]['rf']:
+        rf_pe1 = "analysis/trim/%s/%s_R1.pe_val_1.fq.gz" % (genome, sra)
+        rf_pe2 = "analysis/trim/%s/%s_R2.pe_val_2.fq.gz" % (genome, sra)
+        # assert rf_pe1 in input.rf_pe1, "Not in input: %s" % rf_pe1
+        if gz_not_empty(rf_pe1):
+            lines += default
+            lines.append('avg_ins=%d' % rf_pe_ins)
+            lines.append('rank=1')
+            lines.append('pair_num_cutoff=3')
+            lines.append('q1=%s' % rf_pe1)
+            lines.append('q2=%s' % rf_pe2)
+        mp1 = "analysis/trim/%s/%s_R1.mp_rc.fq.gz" % (genome, sra)
+        mp2 = "analysis/trim/%s/%s_R2.mp_rc.fq.gz" % (genome, sra)
+        # assert mp1 in input.mp1, "Not in input: %s" % mp1
+        if gz_not_empty(mp1):
+            lines += default
+            lines.append('avg_ins=%d' % rf_mp_ins)
+            lines.append('rank=2')
+            lines.append('pair_num_cutoff=5')
+            lines.append('q1=%s' % mp1)
+            lines.append('q2=%s' % mp2)
+    return '\n'.join(lines)
+
+rule soap_config:
+    input:
+        fr_pe1 = lambda w: expand("analysis/trim/{{genome}}/{sra}_1_val_1.fq.gz",     sra = type_libs[w.genome]['fr']),
+        fr_pe2 = lambda w: expand("analysis/trim/{{genome}}/{sra}_2_val_2.fq.gz",     sra = type_libs[w.genome]['fr']),
+        mp1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc.fq.gz",    sra = type_libs[w.genome]['rf']),
+        mp2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc.fq.gz",    sra = type_libs[w.genome]['rf']),
+        rf_pe1 = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.pe_val_1.fq.gz", sra = type_libs[w.genome]['rf']),
+        rf_pe2 = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.pe_val_2.fq.gz", sra = type_libs[w.genome]['rf'])
+    output:
+        "analysis/soapdenovo/{genome}/libs.cfg"
+    params:
+        config = make_soap_config
+    shell:
+        "echo '{params.config}' > {output}"
+
+rule fusion:
+    input:
+        config = "analysis/soapdenovo/{genome}/libs.cfg",
+        contigs = "analysis/megahit/{genome}/final.contigs.fa"
+    output:
+        "analysis/soapdenovo/{genome}/K{K}/fusion.contig"
+    params:
+        prefix = "analysis/soapdenovo/{genome}/K{K}/fusion"
+    conda:
+        # NB: SOAPdenovo-fusion itself is system-wide
+        "envs/soapdenovo.yaml"
+    threads:
+        4
+    shell:
+        "SOAPdenovo-fusion -D -s {input.config} -p {threads} -K {wildcards.K} -g {params.prefix} -c {input.contigs}"
+
+rule soap_map:
+    input:
+        config = "analysis/soapdenovo/{genome}/libs.cfg",
+        contigs = "analysis/soapdenovo/{genome}/K{K}/fusion.contig"
+    output:
+        "analysis/soapdenovo/{genome}/K{K}/fusion.peGrads"
+    params:
+        prefix = "analysis/soapdenovo/{genome}/K{K}/fusion"
+    conda:
+        "envs/soapdenovo.yaml"
+    threads:
+        25
+    shell:
+        "SOAPdenovo-127mer map -s {input.config} -p {threads} -g {params.prefix}"
+
+rule soap_scaf:
+    input:
+        config = "analysis/soapdenovo/{genome}/libs.cfg",
+        grads = "analysis/soapdenovo/{genome}/K{K}/fusion.peGrads"
+    output:
+        "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq"
+    params:
+        prefix = "analysis/soapdenovo/{genome}/K{K}/fusion"
+    conda:
+        "envs/soapdenovo.yaml"
+    threads:
+        25
+    shell:
+        "SOAPdenovo-127mer scaff -p {threads} -g {params.prefix}"
+
+rule soap_MCP:
+    input:
+        hmm = "hmm/{profile}.hmm",
+        fasta = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq"
+    output:
+        "analysis/soapdenovo/{genome}/K{K}/viruses/{profile}.txt"
+    params:
+        minsize = 120,
+        e_value = 1e-5
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "getorf -minsize {params.minsize} -filter -sformat pearson {input.fasta} | hmmsearch -E {params.e_value} -o /dev/null --tblout {output} {input.hmm} -"
+
+rule soap_extract:
+    input:
+        MCP = expand("analysis/soapdenovo/{{genome}}/K{{K}}/viruses/{profile}.txt", profile = profiles),
+        fasta = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq",
+        fai = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq.fai"
+    output:
+        "analysis/soapdenovo/{genome}/K{K}/viruses/scaffolds.fasta"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "grep -hv '^#' {input.MCP} | cut -f1 -d_ | xargs seqkit faidx {input.fasta} > {output}"
+
