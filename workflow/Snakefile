@@ -1,5 +1,7 @@
 
 import gzip
+from os.path import dirname
+from os import getuid, getgid
 
 min_read = 35
 
@@ -22,7 +24,7 @@ for genome in genomes:
 
 rule all:
     input:
-        expand("analysis/soapdenovo/{genome}/K{K}/viruses/scaffolds.fasta", genome = genomes, K = 127)
+        expand("analysis/viruses/{genome}/pilon2/pilon.fasta", genome = "globosa")
 
 rule trim_paired:
     input:
@@ -120,8 +122,8 @@ rule megahit:
         fr_pe1_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_1_unpaired_1.fq.gz",       sra = type_libs[w.genome]['fr']),
         fr_pe2_un = lambda w: expand("analysis/trim/{{genome}}/{sra}_2_unpaired_2.fq.gz",       sra = type_libs[w.genome]['fr']),
 
-        mp1       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc.fq.gz",           sra = type_libs[w.genome]['rf']),
-        mp2       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc.fq.gz",           sra = type_libs[w.genome]['rf']),
+        mp1       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc_1.fq.gz",         sra = type_libs[w.genome]['rf']),
+        mp2       = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc_2.fq.gz",         sra = type_libs[w.genome]['rf']),
         rf_pe1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.pe_val_1.fq.gz",        sra = type_libs[w.genome]['rf']),
         rf_pe2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.pe_val_2.fq.gz",        sra = type_libs[w.genome]['rf']),
 
@@ -246,7 +248,7 @@ rule mate_rc:
     input:
         "analysis/trim/{genome}/{sra}_R{dir}.mp_val_{dir}.fq.gz",
     output:
-        "analysis/trim/{genome}/{sra}_R{dir}.mp_rc.fq.gz"
+        "analysis/trim/{genome}/{sra}_R{dir}.mp_rc_{dir}.fq.gz"
     conda:
         "envs/tools.yaml"
     shell:
@@ -283,8 +285,8 @@ def make_soap_config(wildcards, input):
             lines.append('pair_num_cutoff=3')
             lines.append('q1=%s' % rf_pe1)
             lines.append('q2=%s' % rf_pe2)
-        mp1 = "analysis/trim/%s/%s_R1.mp_rc.fq.gz" % (genome, sra)
-        mp2 = "analysis/trim/%s/%s_R2.mp_rc.fq.gz" % (genome, sra)
+        mp1 = "analysis/trim/%s/%s_R1.mp_rc_1.fq.gz" % (genome, sra)
+        mp2 = "analysis/trim/%s/%s_R2.mp_rc_2.fq.gz" % (genome, sra)
         # assert mp1 in input.mp1, "Not in input: %s" % mp1
         if gz_not_empty(mp1):
             lines += default
@@ -299,8 +301,8 @@ rule soap_config:
     input:
         fr_pe1 = lambda w: expand("analysis/trim/{{genome}}/{sra}_1_val_1.fq.gz",     sra = type_libs[w.genome]['fr']),
         fr_pe2 = lambda w: expand("analysis/trim/{{genome}}/{sra}_2_val_2.fq.gz",     sra = type_libs[w.genome]['fr']),
-        mp1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc.fq.gz",    sra = type_libs[w.genome]['rf']),
-        mp2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc.fq.gz",    sra = type_libs[w.genome]['rf']),
+        mp1    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.mp_rc_1.fq.gz",  sra = type_libs[w.genome]['rf']),
+        mp2    = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.mp_rc_2.fq.gz",  sra = type_libs[w.genome]['rf']),
         rf_pe1 = lambda w: expand("analysis/trim/{{genome}}/{sra}_R1.pe_val_1.fq.gz", sra = type_libs[w.genome]['rf']),
         rf_pe2 = lambda w: expand("analysis/trim/{{genome}}/{sra}_R2.pe_val_2.fq.gz", sra = type_libs[w.genome]['rf'])
     output:
@@ -356,12 +358,12 @@ rule soap_scaf:
     shell:
         "SOAPdenovo-127mer scaff -p {threads} -g {params.prefix}"
 
-rule soap_MCP:
+rule find_MCP_scaffolds:
     input:
         hmm = "hmm/{profile}.hmm",
-        fasta = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq"
+        fasta = "analysis/mira/{genome}/mira.fasta"
     output:
-        "analysis/soapdenovo/{genome}/K{K}/viruses/{profile}.txt"
+        "analysis/viruses/{genome}/hmmsearch/{profile}.txt"
     params:
         minsize = 120,
         e_value = 1e-5
@@ -370,15 +372,342 @@ rule soap_MCP:
     shell:
         "getorf -minsize {params.minsize} -filter -sformat pearson {input.fasta} | hmmsearch -E {params.e_value} -o /dev/null --tblout {output} {input.hmm} -"
 
-rule soap_extract:
+rule extract_MCP_scaffolds:
     input:
-        MCP = expand("analysis/soapdenovo/{{genome}}/K{{K}}/viruses/{profile}.txt", profile = profiles),
-        fasta = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq",
-        fai = "analysis/soapdenovo/{genome}/K{K}/fusion.scafSeq.fai"
+        MCP = expand("analysis/viruses/{{genome}}/hmmsearch/{profile}.txt", profile = profiles),
+        fasta = "analysis/mira/{genome}/mira.fasta",
+        fai = "analysis/mira/{genome}/mira.fasta.fai"
     output:
-        "analysis/soapdenovo/{genome}/K{K}/viruses/scaffolds.fasta"
+        "analysis/viruses/{genome}/mira/scaffolds.fasta"
+    params:
+        min_len = 6000
     conda:
         "envs/tools.yaml"
     shell:
-        "grep -hv '^#' {input.MCP} | cut -f1 -d_ | xargs seqkit faidx {input.fasta} > {output}"
+        "grep -hv '^#' {input.MCP} | cut -f1 -d' ' | sed 's/_[0-9]*$//' | sort -u | xargs seqkit faidx {input.fasta} | seqkit seq -m {params.min_len} -o {output}"
 
+rule dust:
+    input:
+        "analysis/viruses/{genome}/{dir}/scaffolds.fasta"
+    output:
+        "analysis/viruses/{genome}/{dir}/scaffolds-dust.fasta"
+    params:
+        cutoff = 10
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "dust {input} {params.cutoff} > {output}"
+
+rule bowtie2_for_pilon_single:
+    input:
+        reads = "analysis/trim/{genome}/{sra}_{suffix}.fq.gz",
+        bt2   = "analysis/viruses/{genome}/{dir}/scaffolds.fasta.1.bt2",
+        fasta = "analysis/viruses/{genome}/{dir}/scaffolds.fasta"
+    output:
+        "analysis/viruses/{genome}/bowtie2/{dir}/{sra}_{suffix}.bam"
+    log:
+        "analysis/viruses/{genome}/bowtie2/{dir}/{sra}_{suffix}.log"
+    params:
+        mode = "fast-local"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    threads:
+        10
+    shell:
+        "bowtie2 --no-unal --threads {threads} --{params.mode} -x {input.fasta} -U {input.reads} 2> {log} | samtools sort -o {output}"
+
+rule bowtie2_for_pilon_paired:
+    input:
+        r1    = "analysis/trim/{genome}/{prefix}1{suffix}_1.fq.gz",
+        r2    = "analysis/trim/{genome}/{prefix}2{suffix}_2.fq.gz",
+        bt2   = "analysis/viruses/{genome}/{dir}/scaffolds.fasta.1.bt2",
+        fasta = "analysis/viruses/{genome}/{dir}/scaffolds.fasta"
+    output:
+        "analysis/viruses/{genome}/bowtie2/{dir}/{prefix}+{suffix}.bam"
+    log:
+        "analysis/viruses/{genome}/bowtie2/{dir}/{prefix}+{suffix}.log"
+    params:
+        mode = "fast-local"
+    conda:
+        "envs/tools.yaml"
+    threads:
+        10
+    shell:
+        "bowtie2 --threads {threads} --fr --{params.mode} -x {input.fasta} -1 {input.r1} -2 {input.r2} 2> {log} | awk '/^@/||!and($2,4)||!and($2,8)' | samtools sort -o {output}"
+
+rule pilon_scaffolds:
+    input:
+        "analysis/viruses/{genome}/pilon/pilon.fasta"
+    output:
+        "analysis/viruses/{genome}/pilon/scaffolds.fasta"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit replace -p _pilon -o {output} {input}"
+
+rule bowtie2_single_dust:
+    input:
+        reads = "analysis/trim/{genome}/{sra}_{suffix}.fq.gz",
+        bt2   = "analysis/viruses/{genome}/mira/scaffolds-dust.fasta.1.bt2",
+        fasta = "analysis/viruses/{genome}/mira/scaffolds-dust.fasta"
+    output:
+        "analysis/viruses/{genome}/bowtie2/mira-dust/{sra}_{suffix}.bam"
+    log:
+        "analysis/viruses/{genome}/bowtie2/mira-dust/{sra}_{suffix}.log"
+    params:
+        mode = "fast-local"
+    threads:
+        4
+    conda:
+        "envs/tools.yaml"
+    threads:
+        10
+    shell:
+        "bowtie2 --no-unal --threads {threads} --{params.mode} -x {input.fasta} -U {input.reads} 2> {log} | samtools sort -o {output}"
+
+rule bowtie2_paired_dust:
+    input:
+        r1    = "analysis/trim/{genome}/{prefix}1{suffix}_1.fq.gz",
+        r2    = "analysis/trim/{genome}/{prefix}2{suffix}_2.fq.gz",
+        bt2   = "analysis/viruses/{genome}/mira/scaffolds-dust.fasta.1.bt2",
+        fasta = "analysis/viruses/{genome}/mira/scaffolds-dust.fasta"
+    output:
+        "analysis/viruses/{genome}/bowtie2/mira-dust/{prefix}+{suffix}.bam"
+    log:
+        "analysis/viruses/{genome}/bowtie2/mira-dust/{prefix}+{suffix}.log"
+    params:
+        mode = "fast-local"
+    conda:
+        "envs/tools.yaml"
+    threads:
+        10
+    shell:
+        "bowtie2 --threads {threads} --fr --{params.mode} -x {input.fasta} -1 {input.r1} -2 {input.r2} 2> {log} | awk '/^@/||!and($2,4)||!and($2,8)' | samtools sort -o {output}"
+
+rule index_bam:
+    input:
+        "{prefix}.bam"
+    output:
+        "{prefix}.bam.bai"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "samtools index {input}"
+
+def pilon_input(wildcards, input):
+    bams = []
+    for key, value in input.items():
+        for fname in value:
+            if fname.endswith(".bam"):
+                bams.append('--bam ' + fname)
+    return ' '.join(bams)
+
+rule fastq_for_extender:
+    input:
+        fr_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_+_val.bam",               sra = type_libs[w.genome]['fr']),
+        fr_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_1_unpaired_1.bam",        sra = type_libs[w.genome]['fr']),
+        fr_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_2_unpaired_2.bam",        sra = type_libs[w.genome]['fr']),
+        mp        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R+.mp_rc.bam",            sra = type_libs[w.genome]['rf']),
+        rf_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R+.pe_val.bam",           sra = type_libs[w.genome]['rf']),
+        mp1_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R1.mp_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        mp2_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R2.mp_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R1.pe_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R2.pe_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        se        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}.se_trimmed.bam",          sra = type_libs[w.genome]['rf']),
+        un1       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R1.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf']),
+        un2       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/mira-dust/{sra}_R2.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf'])
+    output:
+        "analysis/viruses/{genome}/mira-fastq/cat.fq.gz"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "samtools cat {input} | samtools fastq | gzip > {output}"
+
+rule pilon:
+    input:
+        fr_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_+_val.bam",               sra = type_libs[w.genome]['fr']),
+        fr_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_1_unpaired_1.bam",        sra = type_libs[w.genome]['fr']),
+        fr_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_2_unpaired_2.bam",        sra = type_libs[w.genome]['fr']),
+        mp        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R+.mp_rc.bam",            sra = type_libs[w.genome]['rf']),
+        rf_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R+.pe_val.bam",           sra = type_libs[w.genome]['rf']),
+        mp1_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.mp_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        mp2_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.mp_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.pe_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.pe_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        se        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}.se_trimmed.bam",          sra = type_libs[w.genome]['rf']),
+        un1       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf']),
+        un2       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf']),
+
+        bai_fr_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_+_val.bam.bai",               sra = type_libs[w.genome]['fr']),
+        bai_fr_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_1_unpaired_1.bam.bai",        sra = type_libs[w.genome]['fr']),
+        bai_fr_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_2_unpaired_2.bam.bai",        sra = type_libs[w.genome]['fr']),
+        bai_mp        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R+.mp_rc.bam.bai",            sra = type_libs[w.genome]['rf']),
+        bai_rf_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R+.pe_val.bam.bai",           sra = type_libs[w.genome]['rf']),
+        bai_mp1_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.mp_unpaired_1.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_mp2_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.mp_unpaired_2.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_rf_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.pe_unpaired_1.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_rf_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.pe_unpaired_2.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_se        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}.se_trimmed.bam.bai",          sra = type_libs[w.genome]['rf']),
+        bai_un1       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R1.unknown_trimmed.bam.bai",  sra = type_libs[w.genome]['rf']),
+        bai_un2       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/extender/{sra}_R2.unknown_trimmed.bam.bai",  sra = type_libs[w.genome]['rf']),
+
+        fasta = "analysis/viruses/{genome}/extender/scaffolds.fasta"
+
+    output:
+        outdir = directory("analysis/viruses/{genome}/pilon/"),
+        fasta = "analysis/viruses/{genome}/pilon/pilon.fasta"
+    params:
+        bams = pilon_input
+    resources:
+        mem_mb = 150000
+    conda:
+        "envs/pilon.yaml"
+    shell:
+        "pilon -Xmx{resources.mem_mb}M --genome {input.fasta} {params.bams} --outdir {output.outdir} --fix all"
+
+rule pilon2:
+    input:
+        fr_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_+_val.bam",               sra = type_libs[w.genome]['fr']),
+        fr_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_1_unpaired_1.bam",        sra = type_libs[w.genome]['fr']),
+        fr_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_2_unpaired_2.bam",        sra = type_libs[w.genome]['fr']),
+        mp        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R+.mp_rc.bam",            sra = type_libs[w.genome]['rf']),
+        rf_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R+.pe_val.bam",           sra = type_libs[w.genome]['rf']),
+        mp1_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.mp_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        mp2_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.mp_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.pe_unpaired_1.bam",    sra = type_libs[w.genome]['rf']),
+        rf_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.pe_unpaired_2.bam",    sra = type_libs[w.genome]['rf']),
+        se        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}.se_trimmed.bam",          sra = type_libs[w.genome]['rf']),
+        un1       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf']),
+        un2       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.unknown_trimmed.bam",  sra = type_libs[w.genome]['rf']),
+
+        bai_fr_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_+_val.bam.bai",               sra = type_libs[w.genome]['fr']),
+        bai_fr_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_1_unpaired_1.bam.bai",        sra = type_libs[w.genome]['fr']),
+        bai_fr_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_2_unpaired_2.bam.bai",        sra = type_libs[w.genome]['fr']),
+        bai_mp        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R+.mp_rc.bam.bai",            sra = type_libs[w.genome]['rf']),
+        bai_rf_pe     = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R+.pe_val.bam.bai",           sra = type_libs[w.genome]['rf']),
+        bai_mp1_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.mp_unpaired_1.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_mp2_un    = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.mp_unpaired_2.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_rf_pe1_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.pe_unpaired_1.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_rf_pe2_un = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.pe_unpaired_2.bam.bai",    sra = type_libs[w.genome]['rf']),
+        bai_se        = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}.se_trimmed.bam.bai",          sra = type_libs[w.genome]['rf']),
+        bai_un1       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R1.unknown_trimmed.bam.bai",  sra = type_libs[w.genome]['rf']),
+        bai_un2       = lambda w: expand("analysis/viruses/{{genome}}/bowtie2/pilon/{sra}_R2.unknown_trimmed.bam.bai",  sra = type_libs[w.genome]['rf']),
+
+        fasta = "analysis/viruses/{genome}/pilon/scaffolds.fasta"
+
+    output:
+        outdir = directory("analysis/viruses/{genome}/pilon2/"),
+        fasta = "analysis/viruses/{genome}/pilon2/pilon.fasta"
+    params:
+        bams = pilon_input
+    resources:
+        mem_mb = 150000
+    conda:
+        "envs/pilon.yaml"
+    shell:
+        "pilon -Xmx{resources.mem_mb}M --genome {input.fasta} {params.bams} --outdir {output.outdir} --fix all"
+
+# NB: separate docker container
+rule contig_extender:
+    input:
+        reads = "analysis/viruses/{genome}/mira-fastq/cat.fq.gz",
+        fasta = "analysis/viruses/{genome}/mira/scaffolds.fasta"
+    output:
+        outdir = directory("analysis/viruses/{genome}/extender"),
+        fasta = "analysis/viruses/{genome}/extender/contigs.fasta"
+    params:
+        min_overlap = 60,
+        branch = 2,
+        user = '%d:%d' % (getuid(), getgid()),
+        basedir = dirname(workflow.basedir),
+        container = "dengzac/contig-extender:v0.1"
+    threads:
+        workflow.cores
+    shadow:
+        "shallow"
+    shell:
+        """
+        docker run --user {params.user} --rm -v {params.basedir}:/app/mnt --workdir /app/mnt {params.container} \
+            --threads {threads} --out {output.outdir} --min-overlap-length {params.min_overlap} --branch-limit {params.branch} {input.fasta} {input.reads}
+        """
+
+rule extender_scaffolds:
+    input:
+        "analysis/viruses/{genome}/extender/contigs.fasta"
+    output:
+        "analysis/viruses/{genome}/extender/scaffolds.fasta"
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit sort -l {input} | seqkit replace -p '_[0-9]+\\b' | seqkit rmdup | seqkit replace -sp [^ATGCatgc] -r N -o {output}"
+
+rule filter_short:
+    input:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq"
+    output:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq.short.fasta"
+    params:
+        lim = 32000 - 1
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit seq -gM{params.lim} -o {output} {input}"
+
+rule filter_long:
+    input:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq"
+    output:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq.long.fasta"
+    params:
+        lim = 32000
+    conda:
+        "envs/tools.yaml"
+    shell:
+        "seqkit seq -gm{params.lim} -o {output} {input}"
+
+rule mira_manifest:
+    input:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq.short.fasta"
+    output:
+        "analysis/mira/{genome}/mira.manifest"
+    shell:
+        """
+        echo "
+            project = mira
+            job = denovo,clustering,accurate
+            parameters = --noclipping
+            parameters = TEXT_SETTINGS -AS:epoq=no
+            readgroup
+            technology = text
+            data = fna::{input}
+        " > {output}
+        """
+
+# NB: not under conda
+rule mira:
+    input:
+        manifest = "analysis/mira/{genome}/mira.manifest",
+        fasta = "analysis/soapdenovo/{genome}/K127/fusion.scafSeq.short.fasta"
+    output:
+        "analysis/mira/{genome}/mira_d_results/mira_out.padded.fasta"
+    params:
+        outdir = "analysis/mira/{genome}"
+    log:
+        "analysis/mira/{genome}/mira.log"
+    shadow:
+        "shallow"
+    threads:
+        12
+    shell:
+        "mira -t {threads} {input.manifest} &> {log} && mv mira_assembly/* {params.outdir}/"
+
+rule mira_cat_long:
+    input:
+        "analysis/soapdenovo/{genome}/K127/fusion.scafSeq.long.fasta",
+        "analysis/mira/{genome}/mira_d_results/mira_out.padded.fasta"
+    output:
+        "analysis/mira/{genome}/mira.fasta"
+    shell:
+        "cat {input} > {output}"

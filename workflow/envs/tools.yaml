@@ -1,6 +1,6 @@
 channels:
- - bioconda
  - conda-forge
+ - bioconda
 dependencies:
  - seqkit=0.14.0
  - trim-galore=0.6.7
@@ -9,3 +9,6 @@ dependencies:
  - emboss=6.6.0
  - bbmap=38.96
  - bowtie2=2.4.5
+ - samtools=1.15.1
+ - meme=5.4.1
+ - cap3=10.2011
